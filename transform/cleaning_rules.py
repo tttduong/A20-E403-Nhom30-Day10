@@ -25,10 +25,19 @@ ALLOWED_DOC_IDS = frozenset(
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DMY_SLASH = re.compile(r"^(\d{2})/(\d{2})/(\d{4})$")
+_REFUND_MIGRATION_NOTE = re.compile(r"\s*\(ghi chú:[^)]+\)", flags=re.IGNORECASE)
 
 
 def _norm_text(s: str) -> str:
     return " ".join((s or "").strip().split()).lower()
+
+
+def _canonical_text(s: str) -> str:
+    """
+    Khoá chuẩn hoá mạnh hơn _norm_text để chặn near-duplicate trước embed.
+    """
+    base = _norm_text(s)
+    return re.sub(r"[^\w]+", "", base, flags=re.UNICODE)
 
 
 def _stable_chunk_id(doc_id: str, chunk_text: str, seq: int) -> str:
@@ -80,6 +89,7 @@ def clean_rows(
     """
     quarantine: List[Dict[str, Any]] = []
     seen_text: set[str] = set()
+    seen_canonical_text: set[str] = set()
     cleaned: List[Dict[str, Any]] = []
     seq = 0
 
@@ -115,6 +125,11 @@ def clean_rows(
             quarantine.append({**raw, "reason": "missing_chunk_text"})
             continue
 
+        # Rule mới 1: chặn chunk quá ngắn / kém thông tin để tránh embed nhiễu.
+        if len(_norm_text(text)) < 20:
+            quarantine.append({**raw, "reason": "low_information_chunk"})
+            continue
+
         key = _norm_text(text)
         if key in seen_text:
             quarantine.append({**raw, "reason": "duplicate_chunk_text"})
@@ -129,6 +144,19 @@ def clean_rows(
                     "7 ngày làm việc",
                 )
                 fixed_text += " [cleaned: stale_refund_window]"
+        # Rule mới 2: bỏ migration note trong ngoặc để giảm nhiễu embedding.
+        fixed_text = _REFUND_MIGRATION_NOTE.sub("", fixed_text).strip()
+        fixed_text = " ".join(fixed_text.split())
+        if not fixed_text:
+            quarantine.append({**raw, "reason": "empty_chunk_after_cleanup"})
+            continue
+
+        # Rule mới 3: dedupe sau transform bằng canonical key để chống trùng near-duplicate.
+        canonical_key = _canonical_text(fixed_text)
+        if canonical_key in seen_canonical_text:
+            quarantine.append({**raw, "reason": "duplicate_chunk_text_after_transform"})
+            continue
+        seen_canonical_text.add(canonical_key)
 
         seq += 1
         cleaned.append(

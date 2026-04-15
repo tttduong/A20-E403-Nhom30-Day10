@@ -11,6 +11,11 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
 
+def _canonical_text(s: str) -> str:
+    base = " ".join((s or "").strip().split()).lower()
+    return re.sub(r"[^\w]+", "", base, flags=re.UNICODE)
+
+
 @dataclass
 class ExpectationResult:
     name: str
@@ -109,6 +114,32 @@ def run_expectations(cleaned_rows: List[Dict[str, Any]]) -> Tuple[List[Expectati
             ok6,
             "halt",
             f"violations={len(bad_hr_annual)}",
+        )
+    )
+
+    # E7 (mới): chunk_id phải duy nhất để upsert idempotent, tránh duplicate embedding.
+    ids = [str(r.get("chunk_id") or "").strip() for r in cleaned_rows]
+    dup_ids = len(ids) - len(set(ids))
+    ok7 = dup_ids == 0 and all(ids)
+    results.append(
+        ExpectationResult(
+            "unique_non_empty_chunk_id",
+            ok7,
+            "halt",
+            f"duplicate_ids={dup_ids}, empty_ids={sum(1 for i in ids if not i)}",
+        )
+    )
+
+    # E8 (mới): canonical chunk_text phải duy nhất để hạn chế near-duplicate trong index.
+    canonical = [_canonical_text(str(r.get("chunk_text") or "")) for r in cleaned_rows]
+    dup_canonical = len(canonical) - len(set(canonical))
+    ok8 = dup_canonical == 0
+    results.append(
+        ExpectationResult(
+            "no_canonical_text_duplicates",
+            ok8,
+            "halt",
+            f"duplicate_canonical_text={dup_canonical}",
         )
     )
 
